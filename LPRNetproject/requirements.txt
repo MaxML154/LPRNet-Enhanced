@@ -1,0 +1,15 @@
+torch>=1.7.0
+torchvision>=0.8.1
+numpy>=1.19.2
+opencv-python>=4.4.0
+pillow>=8.0.1
+tqdm>=4.51.0
+matplotlib>=3.3.3
+pyyaml>=5.3.1
+tensorboard>=2.4.0
+onnx>=1.8.0
+onnxruntime>=1.6.0 
+yaml~=0.2.5
+seaborn~=0.13.2
+pandas~=2.2.3
+scikit-learn~=1.6.1
