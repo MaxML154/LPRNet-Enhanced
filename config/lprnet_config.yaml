@@ -1,0 +1,71 @@
+# LPRNet Configuration
+
+# Dataset configuration
+DATASET:
+  ROOT: "F:/CBLPRD-330k_v1/CBLPRD-330k" # Root directory of the dataset
+
+  TRAIN_FILE: "data/train.txt" # Training data list file
+
+  VAL_FILE: "data/val.txt" # Validation data list file
+
+  PLATE_TYPES: ["黑色车牌", "单层黄牌", "双层黄牌", "普通蓝牌", "拖拉机绿牌", "新能源大型车", "新能源小型车"] # Types of license plates in the dataset
+
+# Character configuration
+CHARS:
+  PROVINCES: ["京", "沪", "津", "渝", "冀", "晋", "蒙", "辽", "吉", "黑", 
+              "苏", "浙", "皖", "闽", "赣", "鲁", "豫", "鄂", "湘", "粤", 
+              "桂", "琼", "川", "贵", "云", "藏", "陕", "甘", "青", "宁", 
+              "新", "港", "澳", "挂", "学", "领", "使", "临"]
+  ALPHABETS: ["A", "B", "C", "D", "E", "F", "G", "H", "J", "K", 
+              "L", "M", "N", "P", "Q", "R", "S", "T", "U", "V", 
+              "W", "X", "Y", "Z", "I", "O"]
+  DIGITS: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+  SEPARATOR: ["·"] # Dot separator in license plates
+  SPECIAL: ["挂", "学", "领", "使", "临"] # Special characters
+
+# Model configuration
+MODEL:
+  INPUT_SIZE: [94, 24] # Input size for the model [width, height]
+  CLASS_NUM: 85 # Total number of character classes, calculated as len(PROVINCES) + len(ALPHABETS) + len(DIGITS) + len(SEPARATOR) + len(SPECIAL)
+  MAX_LABEL_LENGTH: 8 # Maximum length of license plate text
+
+# Training configuration
+TRAIN:
+  BATCH_SIZE: 128
+  EPOCHS: 55
+  LEARNING_RATE: 0.001
+  WEIGHT_DECAY: 0.0005
+  LR_SCHEDULER: "cosine" # Options: step, plateau, cosine
+  LR_STEP_SIZE: 30 # For step scheduler
+  LR_PLATEAU_PATIENCE: 10 # For plateau scheduler
+  LR_PLATEAU_FACTOR: 0.1 # For plateau scheduler
+  EARLY_STOPPING_PATIENCE: 25
+  SAVE_INTERVAL: 5 # Save checkpoint every N epochs
+  PRINT_INTERVAL: 100 # Print training info every N batches
+  WORKERS: 4 # Number of data loading workers
+
+# Data augmentation
+AUGMENTATION:
+  ENABLE: True
+  ROTATION_RANGE: 5 # Degrees
+  BRIGHTNESS_RANGE: [0.5, 1.5]
+  CONTRAST_RANGE: [0.5, 1.5]
+  GAUSSIAN_NOISE: 0.02
+  BLUR_PROBABILITY: 0.3
+  BLUR_SIZE: 3
+
+# Test configuration
+TEST:
+  BATCH_SIZE: 64
+  WEIGHTS: "weights/lprnet_best.pth"
+
+# Output configuration
+OUTPUT:
+  DIR: "output"
+  WEIGHTS_DIR: "weights"
+  LOGS_DIR: "logs"
+
+# ONNX export configuration
+EXPORT:
+  INPUT_SIZE: [94, 24] # Input size for ONNX model
+  SIMPLIFIED: True # Whether to simplify the ONNX model 
