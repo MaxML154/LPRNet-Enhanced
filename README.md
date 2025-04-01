@@ -1,4 +1,4 @@
-# LPRNetproject - Chinese License Plate Recognition
+# LPRNet-Enhanced - Chinese License Plate Recognition
 
 This project implements License Plate Recognition for Chinese license plates using LPRNet (License Plate Recognition Network) architecture. It's trained on the CBLPRD-330k dataset.
 
