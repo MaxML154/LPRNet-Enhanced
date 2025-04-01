@@ -48,7 +48,7 @@ This will create:
 - Train and validation data files in `data/train.txt` and `data/val.txt`
 - A sample image in `images/sample_plate.jpg` for demo
 
-However, if you think that's too much for your model, you can [click here](https://github.com/MaxML154/LPRNet-Enhanced/blob/main/README_dataset_reduction.md "Reduce the size of CBLPRD-330k") to learn how to reduce the size of dataset.
+However, if you think that's too much for your model, you can [click here](https://github.com/MaxML154/LPRNet-Enhanced/blob/main/data/README_dataset_reduction.md "Reduce the size of CBLPRD-330k") to learn how to reduce the size of dataset.
 
 ## Training
 
