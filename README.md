@@ -14,8 +14,8 @@ This project implements License Plate Recognition for Chinese license plates usi
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/yourusername/LPRNetproject.git
-cd LPRNetproject
+git clone https://github.com/maxml154/LPRNet-Enhanced.git
+cd LPRNet-Enhanced
 ```
 
 2. Install the required packages:
@@ -98,7 +98,7 @@ python demo.py --image path/to/image.jpg --weights path/to/weights.pth --double_
 ## Project Structure
 
 ```
-LPRNetproject/
+LPRNet-Enhanced/
 ├── config/             # Configuration files
 ├── data/               # Dataset directory
 │   ├── CBLPRD-330k/    # License plate images
