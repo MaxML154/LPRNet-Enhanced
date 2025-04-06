@@ -1,14 +1,16 @@
-# LPRNet-Enhanced - Chinese License Plate Recognition
+# LPRNet-Enhanced: Advanced Chinese License Plate Recognition
 
-This project implements License Plate Recognition for Chinese license plates using LPRNet (License Plate Recognition Network) architecture. It's trained on the CBLPRD-330k dataset.
+An enhanced License Plate Recognition system based on optimized LPRNet architecture with advanced data augmentation and improved recognition capabilities for Chinese license plates.
 
 ## Features
 
-- License plate character recognition using LPRNet
-- Support for different types of Chinese license plates
-- Pre-trained model with CBLPRD-330k dataset
-- ONNX model export for deployment
-- Sample generation for testing without the actual dataset
+- **Multi-type License Plate Recognition**: Supports various Chinese license plate types including standard blue plates, green new energy plates, yellow plates, black plates, and double-row plates
+- **License Plate Color Classification**: Additional classification branch identifies plate color (blue, green, yellow, black)
+- **Advanced Data Augmentation**: Comprehensive augmentation pipeline including rotation, brightness/contrast adjustment, perspective transforms, and more
+- **Skew Correction**: Automatic skew detection and correction using Hough transform to handle tilted license plates
+- **Double-row Plate Optimization**: Special processing for double-row plates (yellow trailer plates and green tractor plates) with horizontal concatenation
+- **Re-sampling Mechanism**: Weighted random sampling to balance training data distribution and improve accuracy on rare plate types
+- **Flexible Training Modes**: Simple command line selection between basic, color classification, and full-featured training modes
 
 ## Installation
 
@@ -64,9 +66,19 @@ python train.py --config config/lprnet_config.yaml
 
 ## Evaluation
 
-To evaluate the model, run:
+Evaluate the model using:
+
 ```bash
-python evaluate.py --weights weights/best.pth
+python test.py --weights weights/best.pth
+```
+
+## Demo
+
+Run a simple demo:
+
+```bash
+python demo.py --image test_images/plate.jpg --weights weights/best.pth
+```
 ```
 
 ## Inference
@@ -96,6 +108,9 @@ For double-layer license plates, use the `--double_layer` flag:
 ```bash
 python demo.py --image path/to/image.jpg --weights path/to/weights.pth --double_layer
 ```
+
+
+
 
 ## Project Structure
 
@@ -128,8 +143,15 @@ LPRNet-Enhanced/
 
 This project is open-source under the MIT License. See LICENSE file for more details.
 
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
 ## Acknowledgments
 
-- [CBLPRD-330k](https://github.com/SunlifeV/CBLPRD-330k) for the dataset
-- [crnn_plate_recognition](https://github.com/we0091234/crnn_plate_recognition) for reference implementation
-- Original LPRNet implementation references
+- CBLPRD-330k dataset creators
+- Original LPRNet implementation
+- YOLOv5-LPRNet project by HuKai97 (https://github.com/HuKai97/YOLOv5-LPRNet-Licence-Recognition)
+- crnn_plate_recognition by we0091234 (https://github.com/we0091234/crnn_plate_recognition)
+- LPRNet_Pytorch by sirius-ai (https://github.com/sirius-ai/LPRNet_Pytorch)
