@@ -1,8 +1,28 @@
-# LPRNet-Enhanced: Chinese License Plate Recognition
+# LPRNet-Enhanced: License Plate Recognition for China Mainland Area
 
 Eng/[中文](README_CN.md '中文介绍') 
 
 A comprehensive license plate recognition system based on LPRNet, optimized for the CBLPRD-330k dataset. This project combines the best features from multiple implementations and adds several enhancements to improve recognition accuracy.
+
+## Table of Contents
+
+- [Features](#features)
+- [Results](#results)
+- [Training Strategy](#training-strategy)
+  - [Optimizer and Learning Rate](#optimizer-and-learning-rate)
+  - [Learning Rate Scheduling](#learning-rate-scheduling)
+  - [Early Stopping](#early-stopping)
+  - [Data Processing](#data-processing)
+  - [Evaluation Strategy](#evaluation-strategy)
+- [Dataset Support](#dataset-support)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Training](#training)
+  - [Testing](#testing)
+- [Command Line Arguments](#command-line-arguments)
+- [Project Structure](#project-structure)
+- [License](#license)
+- [Reference](#reference)
 
 ## Features
 
