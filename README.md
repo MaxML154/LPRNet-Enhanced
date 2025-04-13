@@ -57,7 +57,7 @@ The enhanced model achieves significant improvements in accuracy compared to the
 | LPRNet | 92.5% | 97.8% |
 | LPRNet+STNet | 93.1% | 98.2% |
 
-
+*Experiments were conducted on NVIDIA V100 32G. Results are for reference only, as experimental outcomes may vary between different devices*
 
 ## Training Strategy
 
