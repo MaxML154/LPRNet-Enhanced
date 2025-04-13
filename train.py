@@ -1,355 +1,416 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+Main training script for LPRNet-Enhanced.
+"""
+
 import os
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-import argparse
+import time
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 import numpy as np
-from tqdm import tqdm
-import time
-import random
 
-from models.lprnet import build_lprnet, CTCLoss, decode_ctc
-from utils.dataset import get_train_dataloader, get_val_dataloader, idx_to_text
-from utils.utils import load_config, setup_logger, get_device, save_checkpoint, load_checkpoint, count_parameters
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train LPRNet for license plate recognition')
-    parser.add_argument('--config', type=str, default='config/lprnet_config.yaml',
-                        help='Path to config file')
-    parser.add_argument('--resume', type=str, default=None,
-                        help='Path to checkpoint for resuming training')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed for reproducibility')
-    
-    return parser.parse_args()
-
-
-def set_seed(seed):
-    """Set random seed for reproducibility"""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-
-def create_dirs(config):
-    """Create necessary directories for outputs"""
-    os.makedirs(config['OUTPUT']['DIR'], exist_ok=True)
-    os.makedirs(config['OUTPUT']['WEIGHTS_DIR'], exist_ok=True)
-    os.makedirs(config['OUTPUT']['LOGS_DIR'], exist_ok=True)
-
-
-def get_lr_scheduler(optimizer, config):
-    """Get learning rate scheduler based on config"""
-    scheduler_type = config['TRAIN']['LR_SCHEDULER']
-    
-    if scheduler_type == 'step':
-        scheduler = optim.lr_scheduler.StepLR(
-            optimizer, 
-            step_size=config['TRAIN']['LR_STEP_SIZE'], 
-            gamma=0.1
-        )
-    elif scheduler_type == 'plateau':
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, 
-            mode='min', 
-            factor=config['TRAIN']['LR_PLATEAU_FACTOR'], 
-            patience=config['TRAIN']['LR_PLATEAU_PATIENCE'],
-            verbose=True
-        )
-    elif scheduler_type == 'cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, 
-            T_max=config['TRAIN']['EPOCHS'], 
-            eta_min=1e-6
-        )
-    else:
-        scheduler = None
-    
-    return scheduler
-
-
-def train_epoch(model, train_loader, criterion, optimizer, device, epoch, logger, config, chars_list):
-    """Train for one epoch"""
-    model.train()
-    epoch_loss = 0
-    epoch_acc = 0
-    
-    progress_bar = tqdm(train_loader, desc=f'Epoch {epoch}')
-    
-    for i, (images, targets, target_lengths) in enumerate(progress_bar):
-        # Move data to device
-        images = images.to(device)
-        targets = targets.to(device)
-        target_lengths = torch.tensor(target_lengths, device=device)
-        
-        # 验证数据格式
-        batch_size = images.size(0)
-        if i == 0:
-            logger.info(f"Batch size: {batch_size}")
-            logger.info(f"Images shape: {images.shape}")
-            logger.info(f"Targets shape: {targets.shape}")
-            logger.info(f"Target lengths: {target_lengths}")
-            
-        # 确保target_lengths不超过targets的实际长度
-        max_target_len = targets.size(1)
-        for b in range(batch_size):
-            if target_lengths[b] > max_target_len:
-                logger.warning(f"Target length {target_lengths[b]} exceeds max length {max_target_len}")
-                target_lengths[b] = max_target_len
-        
-        # Forward pass
-        logits = model(images)  # shape: (batch_size, seq_len, num_classes)
-        if i == 0:
-            logger.info(f"Logits shape: {logits.shape}")
-        
-        # 计算logits_lengths
-        logits_length = logits.size(1)
-        logits_lengths = torch.full(size=(batch_size,), fill_value=logits_length, dtype=torch.long, device=device)
-        
-        # 添加额外检查
-        if i == 0:
-            logger.info(f"Logits lengths: {logits_lengths}")
-            sum_target_lengths = target_lengths.sum().item()
-            logger.info(f"Sum of target lengths: {sum_target_lengths}")
-            
-        try:
-            # Compute loss with error handling
-            loss = criterion(logits, targets, logits_lengths, target_lengths)
-            
-            # Compute accuracy
-            pred_texts = decode_ctc(logits.detach(), chars_list)
-            target_texts = [idx_to_text(targets[j][:target_lengths[j]].tolist(), chars_list) for j in range(batch_size)]
-            correct = sum(pred == target for pred, target in zip(pred_texts, target_texts))
-            acc = correct / batch_size
-            
-            # Backward pass and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            # Update metrics
-            epoch_loss += loss.item()
-            epoch_acc += acc
-            
-        except RuntimeError as e:
-            logger.error(f"Runtime error in batch {i}: {str(e)}")
-            logger.error(f"Batch size: {batch_size}")
-            logger.error(f"Images shape: {images.shape}")
-            logger.error(f"Targets shape: {targets.shape}")
-            logger.error(f"Target lengths: {target_lengths}")
-            logger.error(f"Logits shape: {logits.shape}")
-            
-            # 跳过这个批次
-            continue
-        
-        # Update progress bar
-        if (i + 1) % config['TRAIN']['PRINT_INTERVAL'] == 0:
-            progress_bar.set_postfix({
-                'Loss': f'{epoch_loss / (i + 1):.4f}',
-                'Acc': f'{epoch_acc / (i + 1):.4f}'
-            })
-            
-            # Log some predictions
-            logger.info(f"Sample predictions (Epoch {epoch}, Batch {i+1}):")
-            for j in range(min(3, batch_size)):
-                logger.info(f"  True: {target_texts[j]}, Pred: {pred_texts[j]}")
-    
-    # Calculate epoch metrics
-    num_batches = len(train_loader)
-    epoch_loss /= num_batches
-    epoch_acc /= num_batches
-    
-    return epoch_loss, epoch_acc
-
-
-def validate(model, val_loader, criterion, device, chars_list):
-    """Validate the model"""
-    model.eval()
-    val_loss = 0
-    val_acc = 0
-    valid_batches = 0
-    
-    with torch.no_grad():
-        for images, targets, target_lengths in tqdm(val_loader, desc='Validation'):
-            # Move data to device
-            images = images.to(device)
-            targets = targets.to(device)
-            target_lengths = torch.tensor(target_lengths, device=device)
-            
-            # 验证数据格式
-            batch_size = images.size(0)
-            
-            # 确保target_lengths不超过targets的实际长度
-            max_target_len = targets.size(1)
-            for b in range(batch_size):
-                if target_lengths[b] > max_target_len:
-                    print(f"Warning: Target length {target_lengths[b]} exceeds max length {max_target_len}")
-                    target_lengths[b] = max_target_len
-            
-            # Forward pass
-            logits = model(images)
-            
-            try:
-                # Compute loss
-                logits_lengths = torch.full(size=(batch_size,), fill_value=logits.size(1), dtype=torch.long, device=device)
-                loss = criterion(logits, targets, logits_lengths, target_lengths)
-                
-                # Compute accuracy
-                pred_texts = decode_ctc(logits, chars_list)
-                target_texts = [idx_to_text(targets[j][:target_lengths[j]].tolist(), chars_list) for j in range(batch_size)]
-                correct = sum(pred == target for pred, target in zip(pred_texts, target_texts))
-                acc = correct / batch_size
-                
-                # Update metrics
-                val_loss += loss.item()
-                val_acc += acc
-                valid_batches += 1
-                
-            except RuntimeError as e:
-                print(f"Runtime error during validation: {str(e)}")
-                print(f"Skipping batch with shapes: images={images.shape}, targets={targets.shape}, logits={logits.shape}")
-                continue
-    
-    # Calculate validation metrics (only count valid batches)
-    if valid_batches > 0:
-        val_loss /= valid_batches
-        val_acc /= valid_batches
-    else:
-        val_loss = float('inf')
-        val_acc = 0
-    
-    return val_loss, val_acc
-
+from utils.configs.config import get_args, PLATE_CHARS, NUM_CLASSES, compute_lr_milestones
+from utils.dataset.cblprd_dataset import CBLPRDDataset, collate_fn
+from utils.model.lprnet import build_lprnet
+from utils.loss import CTCLoss
+from utils.evaluator import Evaluator
+from utils.logger import Logger
 
 def main():
-    # Parse arguments
-    args = parse_args()
+    # Get arguments
+    args = get_args()
     
-    # Set random seed
-    set_seed(args.seed)
+    # Set device
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.devices
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
     
-    # Load config
-    config = load_config(args.config)
+    # Set random seed for reproducibility
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(0)
+    np.random.seed(0)
     
-    # Create directories
-    create_dirs(config)
-    
-    # Setup logger
-    logger = setup_logger(config['OUTPUT']['LOGS_DIR'])
-    logger.info(f"Config: {config}")
-    
-    # Setup device
-    device = get_device()
-    logger.info(f"Using device: {device}")
-    
-    # Setup data loaders
-    logger.info("Setting up data loaders...")
-    train_loader, chars_dict = get_train_dataloader(config)
-    chars_list = [char for char in chars_dict.keys()]
-    val_loader = get_val_dataloader(config, chars_dict)
-    logger.info(f"Num training samples: {len(train_loader.dataset)}")
-    logger.info(f"Num validation samples: {len(val_loader.dataset)}")
-    
-    # Build model
-    logger.info("Building model...")
-    model = build_lprnet(config)
-    model = model.to(device)
-    logger.info(f"Model parameters: {count_parameters(model)}")
-    
-    # Setup optimizer and loss
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=config['TRAIN']['LEARNING_RATE'],
-        weight_decay=config['TRAIN']['WEIGHT_DECAY']
+    # Create model
+    model = build_lprnet(
+        model_type=args.model_type,
+        num_classes=NUM_CLASSES,
+        lpr_max_len=8,  # Typical max length for Chinese license plates
+        dropout_rate=args.dropout_rate
     )
-    criterion = CTCLoss()
-    scheduler = get_lr_scheduler(optimizer, config)
+    model = model.to(device)
+    print(f"Model: {args.model_type}")
     
-    # Resume training if specified
-    start_epoch = 0
-    best_acc = 0
-    best_loss = float('inf')
+    # 打印文件路径信息
+    print(f"Data directory: {args.data_dir}")
+    print(f"Train file: {args.train_file}")
+    print(f"Val file: {args.val_file}")
+    print(f"Test file: {args.test_file}")
+    
+    # Create datasets and data loaders
+    train_dataset = CBLPRDDataset(
+        data_root=args.data_dir,
+        txt_file=args.train_file,
+        is_train=True,
+        input_shape=(args.input_width, args.input_height),
+        use_resampling=args.use_resampling,
+        correct_skew=args.correct_skew,
+        process_double=args.process_double
+    )
+    
+    val_dataset = CBLPRDDataset(
+        data_root=args.data_dir,
+        txt_file=args.val_file,
+        is_train=False,
+        input_shape=(args.input_width, args.input_height),
+        use_resampling=False,
+        correct_skew=args.correct_skew,
+        process_double=args.process_double
+    )
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=True,
+        collate_fn=collate_fn
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
+        collate_fn=collate_fn
+    )
+    
+    # Create loss function, optimizer, and evaluator
+    criterion = CTCLoss(blank_label=0)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    
+    # 创建学习率调度器
+    scheduler = create_scheduler(optimizer, args)
+    
+    evaluator = Evaluator(blank_label=0)
+    
+    # Create logger
+    logger = Logger(log_interval=args.log_interval)
+    
+    # Training state
+    start_epoch = 1
+    best_accuracy = 0
+    no_improvement_count = 0
+    
+    # Resume from checkpoint if specified
     if args.resume:
-        logger.info(f"Resuming from checkpoint: {args.resume}")
-        start_epoch, best_acc, best_loss = load_checkpoint(model, optimizer, scheduler, args.resume)
-        logger.info(f"Resumed from epoch {start_epoch}, best acc: {best_acc:.4f}, best loss: {best_loss:.4f}")
-    
-    # Setup tensorboard
-    writer = SummaryWriter(log_dir=config['OUTPUT']['LOGS_DIR'])
+        if os.path.isfile(args.resume):
+            print(f"Loading checkpoint '{args.resume}'")
+            checkpoint = torch.load(args.resume, map_location=device)
+            start_epoch = checkpoint['epoch'] + 1
+            best_accuracy = checkpoint['best_accuracy']
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            if 'scheduler' in checkpoint and scheduler is not None:
+                scheduler.load_state_dict(checkpoint['scheduler'])
+            print(f"Loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
+        else:
+            print(f"No checkpoint found at '{args.resume}'")
     
     # Training loop
-    logger.info("Starting training...")
-    no_improve_epochs = 0
-    
-    for epoch in range(start_epoch, config['TRAIN']['EPOCHS']):
+    for epoch in range(start_epoch, args.epochs + 1):
         # Train for one epoch
-        epoch_start_time = time.time()
-        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device, epoch, logger, config, chars_list)
-        epoch_time = time.time() - epoch_start_time
+        train_loss, train_acc = train_epoch(
+            model, train_loader, criterion, optimizer, epoch, device, logger
+        )
         
-        # Validate
-        val_loss, val_acc = validate(model, val_loader, criterion, device, chars_list)
+        # Evaluate on validation set
+        val_loss, val_acc = validate(
+            model, val_loader, criterion, evaluator, device
+        )
         
-        # Log metrics
-        logger.info(f"Epoch {epoch+1}/{config['TRAIN']['EPOCHS']} | "
-                    f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f} | "
-                    f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f} | "
-                    f"Time: {epoch_time:.2f}s")
-        
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Accuracy/train', train_acc, epoch)
-        writer.add_scalar('Accuracy/val', val_acc, epoch)
-        
-        # Update learning rate
+        # Update learning rate based on scheduler type
         if scheduler is not None:
-            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(val_loss)
+            if args.lr_scheduler == 'plateau':
+                scheduler.step(val_loss)  # ReduceLROnPlateau needs validation loss
             else:
                 scheduler.step()
-            
-            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
-            else:
-                writer.add_scalar('LR', scheduler.get_last_lr()[0], epoch)
+        
+        # 获取当前学习率
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # Log epoch results
+        logger.log_epoch(
+            epoch,
+            {'loss': train_loss},
+            {'accuracy': train_acc},
+            {'loss': val_loss},
+            {'accuracy': val_acc, 'lr': current_lr}
+        )
         
         # Save checkpoint
-        is_best = val_acc > best_acc
-        if is_best:
-            best_acc = val_acc
-            best_loss = val_loss
-            no_improve_epochs = 0
-        else:
-            no_improve_epochs += 1
+        is_best = val_acc > best_accuracy
+        best_accuracy = max(val_acc, best_accuracy)
         
-        # Save checkpoint periodically
-        if (epoch + 1) % config['TRAIN']['SAVE_INTERVAL'] == 0 or is_best:
-            state = {
-                'epoch': epoch + 1,
+        if is_best or epoch % args.save_interval == 0:
+            checkpoint_dict = {
+                'epoch': epoch,
                 'state_dict': model.state_dict(),
+                'best_accuracy': best_accuracy,
                 'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict() if scheduler is not None else None,
-                'best_acc': best_acc,
-                'best_loss': best_loss
+                'lr_scheduler': args.lr_scheduler,  # 保存调度器类型
             }
-            save_checkpoint(state, is_best, config['OUTPUT']['WEIGHTS_DIR'], f'checkpoint_epoch{epoch+1}.pth')
-        
+            
+            # 保存调度器状态（如果存在）
+            if scheduler is not None:
+                checkpoint_dict['scheduler'] = scheduler.state_dict()
+            
+            save_checkpoint(checkpoint_dict, is_best, args.save_dir)
+            
         # Early stopping
-        if no_improve_epochs >= config['TRAIN']['EARLY_STOPPING_PATIENCE']:
-            logger.info(f"No improvement for {no_improve_epochs} epochs. Early stopping.")
+        if is_best:
+            no_improvement_count = 0
+        else:
+            no_improvement_count += 1
+            
+        if no_improvement_count >= args.early_stopping:
+            print(f"No improvement for {args.early_stopping} epochs, stopping training...")
             break
+            
+    # Plot training history
+    logger.plot_metrics(save_path=os.path.join(args.save_dir, 'training_metrics.png'))
     
-    writer.close()
-    logger.info(f"Training completed. Best validation accuracy: {best_acc:.4f}")
+    # Load best model
+    best_model_path = os.path.join(args.save_dir, 'model_best.pth')
+    if os.path.exists(best_model_path):
+        checkpoint = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(checkpoint['state_dict'])
+        print(f"Loaded best model with validation accuracy: {checkpoint['best_accuracy']:.4f}")
+    
+    # 根据参数决定是否进行测试评估
+    test_metrics = None
+    if args.test_after_train:
+        print("\nRunning test evaluation...")
+        # Final evaluation
+        test_dataset = CBLPRDDataset(
+            data_root=args.data_dir,
+            txt_file=args.test_file,
+            is_train=False,
+            input_shape=(args.input_width, args.input_height),
+            use_resampling=False,
+            correct_skew=args.correct_skew,
+            process_double=args.process_double
+        )
+        
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
+        
+        test_metrics = evaluator.evaluate_loader(model, test_loader, device)
+        print("\nTest Results:")
+        print(f"Sequence Accuracy: {test_metrics['sequence_accuracy']:.4f}")
+        print(f"Character Accuracy: {test_metrics['character_accuracy']:.4f}")
+    else:
+        print("\nSkipping test evaluation as requested.")
+        print(f"To evaluate the model, run: python test.py --weights {best_model_path} --data-dir {args.data_dir} --test-file {args.test_file}")
+        
+    return test_metrics
 
+def create_scheduler(optimizer, args):
+    """
+    根据命令行参数创建学习率调度器
+    
+    参数:
+        optimizer: 优化器
+        args: 命令行参数
+    
+    返回:
+        学习率调度器
+    """
+    scheduler_type = args.lr_scheduler.lower()
+    
+    if scheduler_type == 'step':
+        # 每固定步长降低学习率
+        return optim.lr_scheduler.StepLR(
+            optimizer, 
+            step_size=args.lr_step, 
+            gamma=args.lr_gamma
+        )
+    
+    elif scheduler_type == 'multistep':
+        # 在指定epoch降低学习率
+        if args.lr_steps:
+            # 使用命令行指定的降低点
+            milestones = [int(x) for x in args.lr_steps.split(',')]
+        else:
+            # 根据总epoch数自动计算降低点
+            milestones = compute_lr_milestones(args.epochs, args.lr_decay_points)
+        
+        print(f"Using MultiStepLR with milestones at epochs: {milestones}")
+        return optim.lr_scheduler.MultiStepLR(
+            optimizer, 
+            milestones=milestones, 
+            gamma=args.lr_gamma
+        )
+    
+    elif scheduler_type == 'cosine':
+        # 余弦退火学习率
+        return optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.epochs,
+            eta_min=args.lr_min
+        )
+    
+    elif scheduler_type == 'reduce':
+        # 当性能停止提升时降低学习率
+        return optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=args.lr_gamma,
+            patience=5,
+            min_lr=args.lr_min
+        )
+    
+    elif scheduler_type == 'plateau':
+        # 当性能停止提升时降低学习率（与验证损失结合使用）
+        return optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, 
+            mode='min',
+            factor=args.lr_gamma,
+            patience=3,
+            verbose=True
+        )
+    
+    elif scheduler_type == 'onecycle':
+        # OneCycleLR策略
+        steps_per_epoch = 100  # 估计值，实际应该是len(train_loader)
+        return optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=args.lr * 10,  # 最大学习率是初始学习率的10倍
+            steps_per_epoch=steps_per_epoch,
+            epochs=args.epochs,
+            pct_start=0.3  # 30%的训练用于预热
+        )
+    
+    else:
+        print(f"Warning: Unknown scheduler type '{scheduler_type}', not using any scheduler.")
+        return None
+
+def train_epoch(model, train_loader, criterion, optimizer, epoch, device, logger):
+    """Train for one epoch."""
+    model.train()
+    total_loss = 0
+    total_acc = 0
+    batch_time = 0
+    start_time = time.time()
+    num_batches = len(train_loader)
+    
+    for batch_idx, (images, labels, label_lengths) in enumerate(train_loader):
+        batch_start = time.time()
+        
+        # Move data to device
+        images = images.to(device)
+        labels = labels.to(device)
+        
+        # Clear gradients
+        optimizer.zero_grad()
+        
+        # Forward pass
+        preds = model(images)
+        
+        # Prepare for loss calculation
+        batch_size = images.size(0)
+        pred_lengths = torch.full((batch_size,), preds.size(1), dtype=torch.long, device=device)
+        
+        # Flatten labels for CTC loss
+        labels_flat = torch.cat([labels[i, :label_lengths[i]] for i in range(batch_size)])
+        
+        # Calculate loss
+        loss = criterion(preds, labels_flat, pred_lengths, label_lengths)
+        
+        # Backward pass and optimize
+        loss.backward()
+        optimizer.step()
+        
+        # Calculate accuracy
+        with torch.no_grad():
+            target_strings = []
+            for i, length in enumerate(label_lengths):
+                target = labels[i][:length]
+                target_chars = [PLATE_CHARS[idx.item()] for idx in target]
+                target_strings.append("".join(target_chars))
+                
+            _, accuracy = Evaluator(blank_label=0).calculate_accuracy(preds, target_strings)
+        
+        # Update statistics
+        total_loss += loss.item()
+        total_acc += accuracy
+        batch_time = time.time() - batch_start
+        
+        # Log progress
+        logger.log_batch(
+            epoch, batch_idx, num_batches, batch_time, batch_size,
+            {'loss': loss.item()},
+            {'accuracy': accuracy},
+            optimizer.param_groups[0]['lr']
+        )
+        
+    # Calculate average loss and accuracy
+    avg_loss = total_loss / num_batches
+    avg_acc = total_acc / num_batches
+    
+    return avg_loss, avg_acc
+
+def validate(model, val_loader, criterion, evaluator, device):
+    """Evaluate model on validation set."""
+    model.eval()
+    total_loss = 0
+    
+    with torch.no_grad():
+        val_metrics = evaluator.evaluate_loader(model, val_loader, device)
+        
+        # Calculate average loss
+        for images, labels, label_lengths in val_loader:
+            # Move data to device
+            images = images.to(device)
+            labels = labels.to(device)
+            
+            # Forward pass
+            preds = model(images)
+            
+            # Prepare for loss calculation
+            batch_size = images.size(0)
+            pred_lengths = torch.full((batch_size,), preds.size(1), dtype=torch.long, device=device)
+            
+            # Flatten labels for CTC loss
+            labels_flat = torch.cat([labels[i, :label_lengths[i]] for i in range(batch_size)])
+            
+            # Calculate loss
+            loss = criterion(preds, labels_flat, pred_lengths, label_lengths)
+            
+            total_loss += loss.item()
+    
+    avg_loss = total_loss / len(val_loader)
+    
+    return avg_loss, val_metrics['sequence_accuracy']
+
+def save_checkpoint(state, is_best, save_dir):
+    """Save model checkpoint."""
+    os.makedirs(save_dir, exist_ok=True)
+    filename = os.path.join(save_dir, f'checkpoint_epoch{state["epoch"]}.pth')
+    torch.save(state, filename)
+    if is_best:
+        best_filename = os.path.join(save_dir, 'model_best.pth')
+        torch.save(state, best_filename)
 
 if __name__ == '__main__':
     main() 
